@@ -72,7 +72,7 @@ class FrozenSoil():
         HE.set_thermal_conductivity(TCOND)
 
         if (len(self.BC_T) > 0):
-            HE.set_boundary_conditions(self.BC_T[0])
+            HE.set_boundary_conditions(self.BC_T[0],Tbot=273.15)
         else:
             HE.set_boundary_conditions(self.Ttop)
 
@@ -117,9 +117,12 @@ class FrozenSoil():
         self.HC = np.zeros(self.NL) #volumetic heat capacity [j/m3/k]
         self.SMCT = np.zeros(self.NL)
         self.SMCLiq = np.zeros(self.NL)
-        self.ST = np.array(dat["soil_temperature"]) # initial soil temperature
-        self.Ttop = dat["surface_temperature"]
 
+        self.Ttop = dat["surface_temperature"]
+        if (dat["soil_temperature_cont"] == 273.15):
+            self.ST = np.ones(self.NL)*273.15
+        else:
+            self.ST = np.array(dat["soil_temperature"]) # initial soil temperature
         # Time step and boundary condition
         
         self.bc_change = True
@@ -135,7 +138,7 @@ class FrozenSoil():
             self.BC_T = np.ones(self.NTsteps)*260. #default
             self.Time = np.array([self.starttime + i*self.dt for i in range(self.NTsteps+1)])
             #assert (len(self.BC_T) > 0)
-            
+
     def get_Z(self):
         return self.Z
     
@@ -180,6 +183,7 @@ class FrozenSoil():
                 psi_new = self.soil_params["psi_top"]
             else:
                 psi_new = self.soil_params["psi_top"] - p1/(1000 * 9.8)
+            psi_new = z
             fact = 1 + (alpha * psi_new)**n
             theta_temp[i] = self.soil_params["theta_r"] + (self.soil_params["theta_s"] - self.soil_params["theta_r"]) * (fact**(-m))
             
@@ -429,7 +433,7 @@ class FrozenSoil():
             self.dt = (self.Time[i] - self.Time[i-1])#.seconds
 
             # set boundary conditions
-            HE.set_boundary_conditions(self.BC_T[cycles])
+            HE.set_boundary_conditions(self.BC_T[cycles],Tbot=273.15)
 
             self.ST = np.array(HE.AdvanceT(self.dt))
 
