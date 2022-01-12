@@ -30,7 +30,7 @@ import pandas as pd
 
 
 class FrozenSoil():
-    def __init__(self, cfg_file=None,tc_constant=False,standalone_HE=False):
+    def __init__(self, cfg_file=None,smc_file_flag=False,tc_constant=False,standalone_HE=False):
         # define domain and soil properties
         self.NSNOW = 0
         self.ISNOW = 0
@@ -52,13 +52,14 @@ class FrozenSoil():
         self.is_TC_constant = tc_constant # if thermal conductivities are constant, default to 1.0
         self.tc_const = 2.2 # thermal conductivity of saturated sandy soil (used in the damping depth test)
         self.standalone_HE = standalone_HE # standalone heat equation ignores phase change, set to True for damping depth test
+        self.smc_file_flag=smc_file_flag
         
     def initialize(self):
         
         self.read_config_file()
         self.theta_w = self.get_theta()
-        self.SMCT = np.array(self.theta_w) # total soil moisture content
-        self.SMCLiq = np.array(self.theta_w) # liquid water content
+        #self.SMCT = np.array(self.theta_w) # total soil moisture content
+        #self.SMCLiq = np.array(self.theta_w) # liquid water content
         self.dz = self.get_dz()
         
         #***************************************************************
@@ -72,12 +73,12 @@ class FrozenSoil():
         HE.set_thermal_conductivity(TCOND)
 
         if (len(self.BC_T) > 0):
-            HE.set_boundary_conditions(self.BC_T[0],Tbot=273.15)
+            HE.set_boundary_conditions(self.BC_T[0],Tbot=self.Tbot)
         else:
-            HE.set_boundary_conditions(self.Ttop)
+            HE.set_boundary_conditions(self.Ttop,Tbot=self.Tbot)
 
         ## Note: we should call PhaseChange here too to get SMCIce initial content, especially it
-        ## will be need when soil T in below freezing at the initial time
+        ## will be need when soil T is below freezing at the initial time
         if (not self.standalone_HE):
             self.PhaseChange()
         
@@ -101,24 +102,44 @@ class FrozenSoil():
         self.CICE   = 2.094E06 # ice heat capacity
         self.CAIR  = 1004.64  # air heat capacity
         self.CSOIL = 2.00E+6 # rock/soil heat capacity
-        self.TKICE  = 2.2  # thermal conductiviyt of ice
+        
         self.HFUS   = 0.3336E06 #latent heat of fusion (j/kg)
-        self.PSISAT = 0.759 #Saturated matrix potential for soil type = silt loam
+        #self.PSISAT = 0.759 #Saturated matrix potential for soil type = silt loam
+        #self.PSISAT = 0.355 #Saturated matrix potential for soil type = loam
+        #self.PSISAT = 0.759 #Saturated matrix potential for soil type = silt
+        self.PSISAT = dat["soil_params"]["psisat"]
         self.GRAV = 9.86
         self.THKW = 0.57 # TC of water
+        self.TKICE  = 2.2  # thermal conductiviyt of ice
         self.THKQTZ = 7.7 # TC of Quartz
-        self.QUARTZ = 0.6 # loamy sand
-        self.THKO  =  2.0 #TC of other mineral 
-        self.TFRZ   = 273.15    #freezing/melting point (k)
-        self.SMCMAX = 0.4 #porosity (maximum soil moisture)
-        self.BEXP = 2.9 # Clap-Honnberger parameter
-        self.WDEN = 1000. #[kg/m3]
         
+        #self.QUARTZ = 0.6 # loamy sand
+        #self.QUARTZ = 0.4 # loamy
+        #self.QUARTZ = 0.1 # silt
+        self.QUARTZ = dat["soil_params"]["quartz"]
+
+        if self.QUARTZ > 0.2:
+            self.THKO  =  2.0 #TC of other mineral
+        else:
+            self.THKO  =  3.0 #TC of other mineral
+        self.TFRZ   = 273.15    #freezing/melting point (k)
+        #self.SMCMAX = 0.44 #porosity (maximum soil moisture) - loam
+        #self.SMCMAX = 0.476 #porosity (maximum soil moisture) - silt
+        self.SMCMAX = dat["soil_params"]["smcmax"]
+        
+        #self.BEXP = 2.9 # Clap-Honnberger parameter
+        #self.BEXP = 5.25 # Clap-Honnberger parameter : loamy
+        #self.BEXP = 5.33 # Clap-Honnberger parameter : silt
+        self.BEXP = dat["soil_params"]["bb"]
+
+        self.WDEN = 1000. #[kg/m3]
         self.HC = np.zeros(self.NL) #volumetic heat capacity [j/m3/k]
         self.SMCT = np.zeros(self.NL)
         self.SMCLiq = np.zeros(self.NL)
 
         self.Ttop = dat["surface_temperature"]
+        self.Tbot = dat["bottom_temperature"]
+        
         if (dat["soil_temperature_cont"] == 273.15):
             self.ST = np.ones(self.NL)*273.15
         else:
@@ -139,6 +160,13 @@ class FrozenSoil():
             self.Time = np.array([self.starttime + i*self.dt for i in range(self.NTsteps+1)])
             #assert (len(self.BC_T) > 0)
 
+        if (self.smc_file_flag):
+            self.smc_file = dat["smc_file"]
+            self.read_smc()
+            self.SMCT = self.SMC_OB[0]
+            self.SMCLiq = self.SMC_OB[0]
+            
+            
     def get_Z(self):
         return self.Z
     
@@ -168,6 +196,20 @@ class FrozenSoil():
     def read_forcing(self):
         self.forcing_data = pd.read_csv(self.forcing_file)
 
+    def read_smc(self):
+        smc_d = pd.read_csv(self.smc_file)
+        self.Time = smc_d['TIME']
+        self.endtime = -1
+        self.dt = -1
+        self.NTsteps = len(self.Time)
+        self.BC_T = smc_d['SURFBC']
+        self.SMC_OB = np.zeros((self.NTsteps,61))
+
+        for i in range(self.NTsteps):
+            vx = smc_d['SMCT'][i].split(',')
+            vx = [float(i) for i in vx]
+            self.SMC_OB[i] = np.array(vx)
+            
     def set_surface_bc(self,bc):
         self.BC_T = bc
     
@@ -192,7 +234,6 @@ class FrozenSoil():
 
 
     def soil_heat_capacity(self):
-        
         SMCMAX = self.soil_params["smcmax"]
         for i in range(self.NL):
             sice = self.SMCT[i] - self.SMCLiq[i]
@@ -215,6 +256,7 @@ class FrozenSoil():
     def compute_TC(self, SMC_c,SH2O_c): 
 
         SATRATIO = SMC_c / self.soil_params['smcmax']
+        #SATRATIO = SH2O_c / self.soil_params['smcmax']
     
         #TC of solids Eq. (10) Peters-Lidard
         THKS = (self.THKQTZ ** self.QUARTZ) * (self.THKO ** (1. - self.QUARTZ))
@@ -222,7 +264,9 @@ class FrozenSoil():
         #SATURATED THERMAL CONDUCTIVITY
         
         #UNFROZEN VOLUME FOR SATURATION (POROSITY*XUNFROZ)
-        XUNFROZ = SH2O_c / SMC_c # (phi * Sliq) / (phi * sliq + phi * sice) = sliq/(sliq+sice) 
+        XUNFROZ = 1.0 #prevent zero division
+        if (SMC_c > 0.0):
+            XUNFROZ = SH2O_c / SMC_c # (phi * Sliq) / (phi * sliq + phi * sice) = sliq/(sliq+sice) 
         
         XU = XUNFROZ * self.SMCMAX # unfrozen volume fraction
         THKSAT = (THKS ** (1. - self.SMCMAX)) * (self.TKICE ** (self.SMCMAX - XU)) * (self.THKW ** XU )
@@ -233,6 +277,7 @@ class FrozenSoil():
     
         # Kersten Number
         # for frozen soil
+        """
         if (SH2O_c + 0.001 > SMC_c ):
             KN = SATRATIO
         else:
@@ -240,7 +285,16 @@ class FrozenSoil():
                 KN = np.log10(SATRATIO) + 1.0
             else:
                 KN = 0.0
-    
+        """
+        if ( (SH2O_c + 0.0005) < SMC_c ):
+            KN = SATRATIO
+        else:
+            if SATRATIO > 0.1:
+                KN = np.log10(SATRATIO) + 1.0
+            elif SATRATIO > 0.05:
+                KN = 0.7*np.log10(SATRATIO) + 1.0
+            else:
+                KN = 0.0
         #Thermal conductivity
         DF = KN * (THKSAT - THKDRY) + THKDRY
     
@@ -265,7 +319,6 @@ class FrozenSoil():
     
     #Freezing-point depression Eq. and mass/temprature correction due to phase change
     def PhaseChange(self):
-        
         SUPERCOOL = np.zeros(self.NL) #supercooled water in soil
         MICE_L = np.zeros(self.NL) #snow/soil ice mass [mm]
         MLIQ_L = np.zeros(self.NL) #snow/soil liquid mass [mm]
@@ -282,7 +335,6 @@ class FrozenSoil():
                 # MICE and MLIQ are in units of [kg/m2]
                 MICE_L[i] = (self.SMCT[i] - self.SMCLiq[i]) * self.dz[i] * self.WDEN # [kg/m2]
                 MLIQ_L[i] = self.SMCLiq[i] * self.dz[i] * self.WDEN
-    
         #set local variables
     
         #create copies of Mice and MLiq
@@ -324,7 +376,7 @@ class FrozenSoil():
         for i in range(self.NL):
             if IMELT[i] > 0:
                 HM_L[i] = (self.ST[i] - self.TFRZ) * (self.HC[i] * self.dz[i])/self.dt
-                self.ST[i] = self.TFRZ # Note the temperature does not go below 0 until the entire there is mixture of water and ice
+                self.ST[i] = self.TFRZ # Note the temperature does not go below 0 until there is a mixture of water and ice
             
             if (IMELT[i] == 1 and HM_L[i] <0):
                 HM_L[i] = 0
@@ -363,7 +415,7 @@ class FrozenSoil():
                 #Correct the Temperature
                 if abs(HEATR)>0:
                     f = self.dt/(self.HC[i] * self.dz[i]) # [m2 K/W]
-                    self.ST[i] = self.ST[i] + f*HEATR # [K] , this is computed from HM = (T_n+1-T_n) * Heat_capacity * DZ/ DT
+                    self.ST[i] = self.ST[i] + f*HEATR # [K] , this is computed from HM = (T_n+1-T_n) * Heat_capacity * DZ/ DT (see Eq (1a and 1b) DONGHAI ZHENG et al. (Evaluation of Noah Frozen .....)
                     if i <-3: #snow layer
                         if (MLIQ_L[i]*MICE_L[i] >0): #if snow layer exits 
                             self.ST[i] = self.TFRZ
@@ -372,6 +424,9 @@ class FrozenSoil():
             self.SMCLiq[i] =  MLIQ_L[i] / (self.WDEN * self.dz[i]) #[-]
             self.SMCT[i]  = (MLIQ_L[i] + MICE_L[i]) / (self.WDEN * self.dz[i]) # [-]
 
+            if (self.SMCLiq[i] - self.SMCT[i] > 1.e-3):
+                print ("Liq sat. is > that SMCT", i, self.SMCLiq[i], self.SMCT[i],MICE_L[i] / (self.WDEN * self.dz[i]) )
+                sys.exit(0)
 
     def get_solution(self):
         return self.A
@@ -420,7 +475,7 @@ class FrozenSoil():
         Told = self.Time[0]
         Tnew = self.Time[0]
         self.A = []
-        cycles = 0
+        cycles = 1
 
         # write initial coditions to matrix A
         
@@ -430,24 +485,36 @@ class FrozenSoil():
 
         for i in range(1,len(self.Time)):
             Tnew = self.Time[i]
-            self.dt = (self.Time[i] - self.Time[i-1])#.seconds
+            self.dt = (self.Time[i] - self.Time[i-1])
 
             # set boundary conditions
-            HE.set_boundary_conditions(self.BC_T[cycles],Tbot=273.15)
+            HE.set_boundary_conditions(self.BC_T[cycles],Tbot=self.Tbot)
 
-            self.ST = np.array(HE.AdvanceT(self.dt))
-
-            if (not self.standalone_HE):
-                self.PhaseChange()
+            
             DF = self.thermal_conductivity()
             HE.set_thermal_conductivity(DF)
             HE.set_temperature(self.ST)
+            HE.set_heat_capacity(self.HC)
             
+            self.ST = np.array(HE.AdvanceT(self.dt))
+            
+            if (not self.standalone_HE):
+                self.PhaseChange()
+                
+            HE.set_temperature(self.ST)
+
             cycles = cycles + 1
             Told = Tnew
 
             self.A.append([Told, copy.copy(self.ST), copy.deepcopy(self.SMCLiq), copy.deepcopy(self.SMCT)])
 
+            ICE =  self.SMCT -  self.SMCLiq
+            self.SMCT = self.SMC_OB[i]
+            self.SMCLiq = self.SMCT - ICE
+            
+            #if i > 26280:
+            #    break
+                
 
 def read_BMI_data(bmi_outfile, nz):
 

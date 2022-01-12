@@ -13,11 +13,13 @@ from numpy.linalg import inv
 # depth
 N = -1
 
-VHC = 2.96E6 #for saturated sandy soil
+#VHC = 2.96E6 #for saturated sandy soil
 #VHC = 0.3336E06 # latent heat of fusion (from noahmp.F)
 DF = np.zeros(1) 
 ST = np.zeros(1)
 Z = np.zeros(1)
+VHC = np.zeros(1)
+
 
 def set_Z(Z_):
     global Z, N
@@ -39,11 +41,15 @@ def set_temperature(T):
 def set_thermal_conductivity(TCond):
     global DF
     DF = TCond
+    
+def set_heat_capacity(HC):
+    global VHC
+    VHC = HC
 # *************************************************************
 #boundary conditions
 TBOT = 273.15
 TPST = 273.15
-OPT_TBOT = 2 # 1 = zero flux, 2 = pescribed temperature
+OPT_TBOT = 1 # 1 = zero flux, 2 = pescribed temperature
 
 # *************************************************************
 def set_boundary_conditions(Ttop, Tbot=-999):
@@ -60,95 +66,6 @@ def ground_flux(st):
     return GHF
 
 
-def AssembleM(N, DT, ST):
-    FLUX = np.zeros(N)
-    AI = np.zeros(N)
-    BI = np.zeros(N)
-    CI = np.zeros(N)
-    RHS = np.zeros(N)
-    LAMBD = np.zeros(N)
-    
-    # compute matrix coefficient using Crank-Nicolson discretization scheme
-    for i in range(0,N):
-        #print ('*******************', VHC, DF[i], i, N)
-        factor = 2000000000.0
-        if i == 0:
-            #h = (Z[i+1] - Z[i])
-            h = Z[i]
-            DTDZ  = (ST[i+1] - ST[i])/ h
-            LAMBD[i] = factor*DT/(4* h * VHC)
-            GHS = ground_flux(ST[i])
-            FLUX[i] = LAMBD[i] * (DF[i] * DTDZ + GHS)
-            
-        elif (i < N -1):
-            h = Z[i+1] - Z[i]
-            h1 = Z[i] - Z[i-1]
-            LAMBD[i] =factor* DT/(4*h* VHC)
-            a_ = - LAMBD[i] * DF[i] /h1
-            c_ = - LAMBD[i] * DF[i+1] /h
-            b_ = 1 + a_ + c_
-            FLUX[i] = -a_ * ST[i-1] + b_ * ST[i] - c_ * ST[i+1]
-        elif (i == N-1):
-            h = (Z[i] - Z[i-1])
-            LAMBD[i] = factor * DT/(4* h* VHC)
-            if OPT_TBOT == 1:
-                BOTFLX = 0.
-                #print ('++++++++++++++++++++++++', OPT_TBOT )
-            elif OPT_TBOT == 2:
-                
-                DTDZ1 = (ST[i] - TBOT) / ( Z[i] - Z[i-1])
-                BOTFLX  = - DF[i] * DTDZ1
-            DTDZ = (ST[i] - ST[i-1] )/ h
-            FLUX[i]  = LAMBD[i] * (-DF[i]*DTDZ  + BOTFLX ) 
-            
-    # put coefficients in the corresponding vectors A,B,C, RHS
-    for i in range(0,N):
-        if i == 0:
-            AI[i] = 0
-            CI[i] = - LAMBD[i] *DF[i]/Z[i]
-            BI[i] = 1 - CI[i]
-        elif (i < N-1):
-            AI[i] = - LAMBD[i] * DF[i]/(Z[i] - Z[i-1])
-            CI[i] = - LAMBD[i] * DF[i+1]/(Z[i+1] - Z[i])
-            BI[i] = 1 - AI[i] - CI[i]
-        elif (i == N-1):
-            AI[i] = - LAMBD[i] * DF[i]/(Z[i] - Z[i-1])
-            CI[i] = 0
-            BI[i] = 1 - AI[i]
-        RHS[i] = FLUX[i]
-        
-    # add the previous timestep ST to the RHS at the boundaries
-    for i in range(N):
-        if i ==0:
-            RHS[i] = ST[i] + RHS[i]
-        elif i == N-1:
-            RHS[i] = ST[i] + RHS[i]
-        else:
-            RHS[i] = RHS[i]
-
-    X = SolverTDMA(AI, BI, CI, RHS)
-    # Set up the enrite NxN matrix 
-    temp_list = []
-    for c in range(N):
-        col = [0.,]*N
-        temp_list.append(list(col))
-
-    M = np.matrix(temp_list)
-
-    for i in range(N):
-        if i==0:
-            M[i,i] = BI[i]
-            M[i,i+1] = CI[i]
-        elif (i >0 and i < N-1):
-            M[i,i] = BI[i]
-            M[i,i+1] = CI[i]
-            M[i,i-1] = AI[i]
-        elif (i== N-1):
-            M[i,i] = BI[i]
-            M[i,i-1] = AI[i]
-    
-    return M, RHS, X
-
 def AssembleM_NEW(N, DT, ST):
     FLUX = np.zeros(N)
     AI = np.zeros(N)
@@ -159,29 +76,28 @@ def AssembleM_NEW(N, DT, ST):
     
     # compute matrix coefficient using Crank-Nicolson discretization scheme
     for i in range(0,N):
-        #print ('*******************', VHC, DF[i], i, N)
-        factor = 1.0
+
         if i == 0:
             #h = (Z[i+1] - Z[i])
             h = Z[i]
             DTDZ  = (ST[i+1] - ST[i])/ h
-            LAMBD[i] = DT/(2* h * VHC)
+            LAMBD[i] = DT/(2* h * VHC[i])
             GHS = ground_flux(ST[i])
-            FLUX[i] = LAMBD[i] * (DF[i] * DTDZ + GHS)
+            #FLUX[i] = LAMBD[i] * (DF[i] * DTDZ + 6*GHS) for 2 years
+            FLUX[i] = LAMBD[i] * (DF[i] * DTDZ + 1*GHS)
         elif (i < N -1):
             h1 = Z[i] - Z[i-1]
             h2 = Z[i+1] - Z[i]
-            LAMBD[i] =  DT/(2*h2* VHC)
+            LAMBD[i] =  DT/(2*h2* VHC[i])
             a_ = - LAMBD[i] * DF[i-1] /h1
             c_ = - LAMBD[i] * DF[i] /h2
             b_ = 1 + a_ + c_
             FLUX[i] = -a_ * ST[i-1] + b_ * ST[i] - c_ * ST[i+1]
         elif (i == N-1):
             h = (Z[i] - Z[i-1])
-            LAMBD[i] =  DT/(2* h* VHC)
+            LAMBD[i] =  DT/(2* h* VHC[i])
             if OPT_TBOT == 1:
                 BOTFLX = 0.
-                #print ('++++++++++++++++++++++++', OPT_TBOT )
             elif OPT_TBOT == 2:
                 DTDZ1 = (ST[i] - TBOT) / ( Z[i] - Z[i-1])
                 BOTFLX  = - DF[i] * DTDZ1
@@ -274,8 +190,6 @@ def UpdateT(DT, ST):
     Minv = inv(M)
     # For CFE we will need a tridiagonal solver as well
     Soln = X #np.array(Minv*RHS_T).flatten()
-    #print ('X: ',X)
-    #print ('S:', Soln)
     
     return Soln
 
